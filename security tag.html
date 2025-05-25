@@ -1,0 +1,66 @@
+import boto3
+from botocore.exceptions import ClientError
+
+def lambda_handler(event, context):
+    # Initialize EC2 client
+    ec2 = boto3.client('ec2')
+    
+    # Get all security groups
+    try:
+        sgs = ec2.describe_security_groups()['SecurityGroups']
+    except ClientError as e:
+        print(f"Error describing security groups: {e}")
+        return {
+            'statusCode': 500,
+            'body': f"Error describing security groups: {e}"
+        }
+    
+    # Custom tags as requested
+    tag_key = 'notification'
+    tag_value = 'mark for deletion'
+    
+    # Counter for stats
+    tagged_count = 0
+    
+    for sg in sgs:
+        sg_id = sg['GroupId']
+        sg_name = sg.get('GroupName', 'unnamed')
+        
+        # Check each ingress rule for 0.0.0.0/0
+        has_public_access = False
+        
+        for permission in sg.get('IpPermissions', []):
+            for ip_range in permission.get('IpRanges', []):
+                if ip_range.get('CidrIp') == '0.0.0.0/0':
+                    has_public_access = True
+                    break
+            if has_public_access:
+                break
+        
+        # If public access found, tag the security group
+        if has_public_access:
+            try:
+                # Check if tag already exists to avoid unnecessary API calls
+                existing_tags = sg.get('Tags', [])
+                tag_exists = any(tag['Key'] == tag_key for tag in existing_tags)
+                
+                if not tag_exists:
+                    ec2.create_tags(
+                        Resources=[sg_id],
+                        Tags=[{
+                            'Key': tag_key,
+                            'Value': tag_value
+                        }]
+                    )
+                    print(f"Tagged SG: {sg_id} ({sg_name}) with {tag_key}: {tag_value}")
+                    tagged_count += 1
+                else:
+                    print(f"SG {sg_id} already has tag {tag_key}, skipping")
+            except ClientError as e:
+                print(f"Error tagging SG {sg_id}: {e}")
+                continue
+    
+    return {
+        'statusCode': 200,
+        'body': f"Completed security group tagging. Tagged {tagged_count} security groups with '{tag_key}: {tag_value}'."
+    }
